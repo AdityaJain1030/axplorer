@@ -35,6 +35,6 @@ python train.py --env_name k4free \
                 --n_layer 4 \
                 --n_head 8 \
                 --n_embd 256 \
-                --gen_batch_size 150 \
+                --gen_batch_size 450 \
                 --max_steps 15000
                 # @REM --process_pool false

@@ -190,7 +190,14 @@ class K4FreeDataPoint(DataPoint):
         if alpha == 0:
             self.score = 0
             return
-
+        
+        # def truncate(number, decimals=0):
+        #     factor = 10 ** decimals
+        #     return math.trunc(number * factor) / factor
+        # degrees = self.data.sum(axis=1)
+        # d_mean = degrees.mean()
+        # regularity = 1.0 / (1.0 + degrees.var())
+        # self.score = (f_val / alpha) * regularity
         self.score = f_val / alpha
 
         # if f_val > alpha:

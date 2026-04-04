@@ -4,6 +4,11 @@ K4-free graph environment for Axplorer.
 Goal: find K4-free graphs on N vertices that maximise N - alpha(G),
 where alpha(G) is the independence number.
 
+The model outputs the COMPLEMENT graph (the non-edges of G). For dense
+K4-free graphs the complement is sparse, so the model has less to encode.
+Internally, self.data stores the complement; the original graph is derived
+as K_N minus self.data for scoring and constraint checks.
+
 Score = N - alpha  (higher is better).
 score = -1 is reserved for INVALID (K4-containing) graphs.
 
@@ -36,6 +41,14 @@ def _build_nbr_masks(adj: np.ndarray):
         for j in np.nonzero(adj[i])[0]:
             nbr[i] |= 1 << int(j)
     return nbr
+
+
+def _complement_adj(adj: np.ndarray) -> np.ndarray:
+    """Return the complement adjacency matrix (K_N minus adj, zero diagonal)."""
+    N = adj.shape[0]
+    comp = np.ones((N, N), dtype=np.uint8) - adj
+    np.fill_diagonal(comp, 0)
+    return comp
 
 
 def _alpha_exact(nbr, N: int) -> int:
@@ -92,13 +105,11 @@ def _alpha_approx(nbr, N: int, n_restarts: int = 30) -> int:
         use_min_degree = (restart % 2 == 0)
 
         if use_min_degree:
-            # ── min-degree greedy with shuffle-based tie-breaking ─────
             priority = [0] * N
             for rank, v in enumerate(vertices):
                 priority[v] = rank
 
             available = (1 << N) - 1
-            # Maintain available-degree per vertex incrementally
             avail_deg = [0] * N
             tmp = available
             while tmp:
@@ -124,11 +135,8 @@ def _alpha_approx(nbr, N: int, n_restarts: int = 30) -> int:
                         best_p = priority[v]
 
                 size += 1
-                # Remove best_v and its neighbours from available
                 removed = available & (nbr[best_v] | (1 << best_v))
                 available &= ~removed
-                # Decrement avail_deg for vertices still available that
-                # were adjacent to any removed vertex
                 r = removed
                 while r:
                     lsb = r & -r
@@ -141,7 +149,6 @@ def _alpha_approx(nbr, N: int, n_restarts: int = 30) -> int:
                         affected ^= alb
                         avail_deg[w] -= 1
         else:
-            # ── pure random greedy ────────────────────────────────────
             available = (1 << N) - 1
             size = 0
             for v in vertices:
@@ -155,16 +162,15 @@ def _alpha_approx(nbr, N: int, n_restarts: int = 30) -> int:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# K4 helpers
+# K4 helpers (all operate on the ORIGINAL graph's nbr masks)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _adding_edge_creates_k4(nbr, u: int, v: int) -> bool:
+def _adding_orig_edge_creates_k4(nbr_orig, u: int, v: int) -> bool:
     """
-    Fast check: does adding edge (u,v) create a K4?
-    A K4 through (u,v) requires two common neighbours c,d of u and v
-    (before the new edge) such that c-d is also an edge.
+    Fast check: does adding edge (u,v) to the original graph create a K4?
+    Equivalent to: removing complement edge (u,v).
     """
-    common = nbr[u] & nbr[v]
+    common = nbr_orig[u] & nbr_orig[v]
     if bin(common).count('1') < 2:
         return False
     tmp = common
@@ -172,7 +178,7 @@ def _adding_edge_creates_k4(nbr, u: int, v: int) -> bool:
         lsb = tmp & -tmp
         c = lsb.bit_length() - 1
         tmp ^= lsb
-        if nbr[c] & (common ^ lsb):
+        if nbr_orig[c] & (common ^ lsb):
             return True
     return False
 
@@ -206,6 +212,9 @@ def _k4_edge_set(clique):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DataPoint
+#
+# self.data stores the COMPLEMENT graph (what the model outputs).
+# The original graph = K_N - self.data.
 # ─────────────────────────────────────────────────────────────────────────────
 
 class K4FreeDataPoint(DataPoint):
@@ -216,31 +225,36 @@ class K4FreeDataPoint(DataPoint):
     def __init__(self, N, init=False):
         super().__init__()
         self.N = N
+        # self.data is the complement graph (model's output space)
         self.data = np.zeros((N, N), dtype=np.uint8)
         self.k4s = []
 
         if init:
-            self._add_edges_greedily()
+            self._init_greedily()
             if self.MAKE_OBJECT_CANONICAL:
                 self.data = sort_graph_based_on_degree(self.data)
             self.calc_features()
             self.calc_score()
 
-    # ── scoring ───────────────────────────────────────────────────────────────
+    def _get_original(self) -> np.ndarray:
+        """Derive the original graph from the stored complement."""
+        return _complement_adj(self.data)
 
-    def _compute_alpha(self, nbr) -> int:
+    # ── scoring (all on original graph) ───────────────────────────────────────
+
+    def _compute_alpha(self, nbr_orig) -> int:
         if self.ALPHA_MODE == "exact":
-            return _alpha_exact(nbr, self.N)
-        return _alpha_approx(nbr, self.N, n_restarts=self.APPROX_RESTARTS)
+            return _alpha_exact(nbr_orig, self.N)
+        return _alpha_approx(nbr_orig, self.N, n_restarts=self.APPROX_RESTARTS)
 
-    def calc_score(self, nbr=None):
+    def calc_score(self, nbr_orig=None):
         if self.k4s:
             self.score = -1
             return
 
-        if nbr is None:
-            nbr = _build_nbr_masks(self.data)
-        alpha = self._compute_alpha(nbr)
+        if nbr_orig is None:
+            nbr_orig = _build_nbr_masks(self._get_original())
+        alpha = self._compute_alpha(nbr_orig)
 
         if alpha == 0:
             self.score = 0
@@ -249,6 +263,7 @@ class K4FreeDataPoint(DataPoint):
         self.score = self.N - alpha
 
     def calc_features(self):
+        """Features encode the complement (self.data) — what the model sees."""
         w = []
         for i in range(self.N):
             for j in range(i + 1, self.N):
@@ -257,44 +272,77 @@ class K4FreeDataPoint(DataPoint):
 
     # ── greedy construction ───────────────────────────────────────────────────
 
-    def _add_edges_greedily(self, nbr=None):
+    def _init_greedily(self):
         """
-        Add edges in random order, skipping any that would create a K4.
-        Maintains nbr masks incrementally. Caller may supply existing nbr
-        to avoid a redundant rebuild.
+        Build a K4-free original graph by starting from K_N (empty complement)
+        and greedily adding original edges (= removing complement edges) while
+        maintaining K4-freeness.
+
+        Since we start from K_N which is full of K4s, we instead:
+        1. Start with empty original graph (full complement = all 1s).
+        2. Greedily add original edges (set complement to 0) if no K4 forms.
         """
         N = self.N
-        if nbr is None:
-            nbr = _build_nbr_masks(self.data)
+        # Start: complement = K_N (original = empty graph)
+        self.data = np.ones((N, N), dtype=np.uint8)
+        np.fill_diagonal(self.data, 0)
+        # nbr_orig tracks the original graph's adjacency as we build it
+        nbr_orig = [0] * N
 
         candidates = [
             (i, j) for i in range(N) for j in range(i + 1, N)
-            if self.data[i, j] == 0
+        ]
+        random.shuffle(candidates)
+
+        for i, j in candidates:
+            # Try adding edge (i,j) to original graph = removing from complement
+            if _adding_orig_edge_creates_k4(nbr_orig, i, j):
+                continue
+            # Accept: add to original, remove from complement
+            nbr_orig[i] |= 1 << j
+            nbr_orig[j] |= 1 << i
+            self.data[i, j] = 0
+            self.data[j, i] = 0
+
+    def _add_orig_edges_greedily(self, nbr_orig=None):
+        """
+        Try to add more edges to the original graph (remove from complement)
+        without creating K4s. Used during local search improvement.
+        Returns the updated nbr_orig masks.
+        """
+        N = self.N
+        if nbr_orig is None:
+            nbr_orig = _build_nbr_masks(self._get_original())
+
+        # Candidates: edges present in complement (absent from original)
+        candidates = [
+            (i, j) for i in range(N) for j in range(i + 1, N)
+            if self.data[i, j] == 1
         ]
         random.shuffle(candidates)
 
         for i, j in candidates:
             if self.data[i, j] == 0:
-                if _adding_edge_creates_k4(nbr, i, j):
-                    continue
-                self.data[i, j] = 1
-                self.data[j, i] = 1
-                nbr[i] |= 1 << j
-                nbr[j] |= 1 << i
+                continue  # already added by a prior iteration
+            if _adding_orig_edge_creates_k4(nbr_orig, i, j):
+                continue
+            nbr_orig[i] |= 1 << j
+            nbr_orig[j] |= 1 << i
+            self.data[i, j] = 0
+            self.data[j, i] = 0
 
-        return nbr
+        return nbr_orig
 
     # ── K4 removal ────────────────────────────────────────────────────────────
 
-    def _remove_edges_greedily(self, nbr):
+    def _remove_orig_edges_greedily(self, nbr_orig):
         """
-        Remove the edge participating in the most K4s, repeat until K4-free.
-        Recomputes K4 list from scratch after each removal to avoid stale
-        entries from edge-set overlap between cliques.
-        Returns the (mutated) nbr masks.
+        Remove original-graph edges (add to complement) to eliminate K4s.
+        Recomputes K4 list after each removal.
+        Returns the updated nbr_orig masks.
         """
         while True:
-            self.k4s = _find_k4s(nbr, self.N)
+            self.k4s = _find_k4s(nbr_orig, self.N)
             if not self.k4s:
                 break
 
@@ -305,26 +353,27 @@ class K4FreeDataPoint(DataPoint):
                     edge_count[e] = edge_count.get(e, 0) + 1
 
             i, j = max(edge_count, key=edge_count.get)
-            self.data[i, j] = 0
-            self.data[j, i] = 0
-            nbr[i] &= ~(1 << j)
-            nbr[j] &= ~(1 << i)
+            # Remove from original = add to complement
+            nbr_orig[i] &= ~(1 << j)
+            nbr_orig[j] &= ~(1 << i)
+            self.data[i, j] = 1
+            self.data[j, i] = 1
 
-        return nbr
+        return nbr_orig
 
     # ── local search ──────────────────────────────────────────────────────────
 
     def local_search(self, improve_with_local_search):
-        nbr = _build_nbr_masks(self.data)
-        nbr = self._remove_edges_greedily(nbr)
+        nbr_orig = _build_nbr_masks(self._get_original())
+        nbr_orig = self._remove_orig_edges_greedily(nbr_orig)
         if improve_with_local_search:
-            nbr = self._add_edges_greedily(nbr)
+            nbr_orig = self._add_orig_edges_greedily(nbr_orig)
         self.k4s = []
         if self.MAKE_OBJECT_CANONICAL:
             self.data = sort_graph_based_on_degree(self.data)
-            nbr = _build_nbr_masks(self.data)
+            nbr_orig = _build_nbr_masks(self._get_original())
         self.calc_features()
-        self.calc_score(nbr=nbr)
+        self.calc_score(nbr_orig=nbr_orig)
 
     # ── class-level params (process pool) ────────────────────────────────────
 

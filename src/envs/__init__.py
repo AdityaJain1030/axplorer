@@ -4,8 +4,9 @@ from src.envs.sphere import SphereEnvironment
 
 ENVS = {"square": SquareEnvironment, "isosceles": IsoscelesEnvironment, "sphere": SphereEnvironment}
 
-from src.envs.k4free import K4FreeEnvironment
-ENVS["k4free"] = K4FreeEnvironment
+# from src.envs.k4free import K4FreeEnvironment
+from src.envs.ramsey_4_t import K4FreeEnvironment
+ENVS["ramsey_4_t"] = K4FreeEnvironment
 
 def build_env(params):
     """

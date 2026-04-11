@@ -1,0 +1,59 @@
+# ----------------------------------------------------------------------
+# HTCondor Submit File — KFour Production Sweep
+# ----------------------------------------------------------------------
+# Runs run_kfour_production.sh on a single A40 machine.
+# All 38 (N, t) pairs are handled sequentially inside the script;
+# only one HTCondor job is queued.
+#
+# Before submitting:
+#   1. Set initialdir to the axplorer repo root on the server
+#   2. Set the Machine name in Requirements
+#   3. Run:  mkdir -p <initialdir>/results/kfour/logs
+#   4. Ensure micromamba + env_axplorer are set up on the target machine
+#
+# Submit with:
+#   condor_submit kfour_production.sub
+# ----------------------------------------------------------------------
+
+universe = vanilla
+
+executable = run_kfour_production.sh
+
+# Axplorer repo root on the remote server.
+# EDIT THIS before submitting.
+initialdir = /home/adityaj8/axplorer
+
+getenv = True
+
+# ----------------------------------------------------------------------
+# Output / error / log
+# ----------------------------------------------------------------------
+# The results/ tree is written by the script itself.
+# These three files capture HTCondor-level stdout/stderr/events.
+output = logs/job_$(Cluster)_$(Process).out
+error  = logs/job_$(Cluster)_$(Process).err
+log    = logs/job_$(Cluster)_$(Process).log
+
+# ----------------------------------------------------------------------
+# Resource Requests
+# ----------------------------------------------------------------------
+request_cpus   = 16
+request_memory = 150GB
+request_disk   = 100GB    # model checkpoints × 38 runs + logs; ~200 MB/run worst case
+request_gpus   = 1
+
+# ----------------------------------------------------------------------
+# Machine targeting
+# ----------------------------------------------------------------------
+# Target the specific A40 node.
+# EDIT the Machine name to match the actual hostname.
+# CUDAGlobalMemoryMb >= 45000 guards against accidentally landing on a
+# smaller GPU if the machine constraint is relaxed later.
+Requirements = (Machine == "vision-c23.cs.illinois.edu") \
+            && (CUDAGlobalMemoryMb >= 45000)
+
+# Prevent the job from being evicted mid-sweep.
+# Remove or reduce if the cluster policy disallows long jobs.
++MaxJobRetirementTime = 604800    # 7 days in seconds
+
+queue

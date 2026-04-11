@@ -8,6 +8,9 @@ ENVS = {"square": SquareEnvironment, "isosceles": IsoscelesEnvironment, "sphere"
 from src.envs.ramsey_4_t import K4FreeEnvironment
 ENVS["ramsey_4_t"] = K4FreeEnvironment
 
+from src.envs.kfour import KFourEnvironment
+ENVS["kfour"] = KFourEnvironment
+
 def build_env(params):
     """
     Build environment.
